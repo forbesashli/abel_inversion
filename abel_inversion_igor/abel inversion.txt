@@ -1,0 +1,849 @@
+#pragma rtGlobals=1		// Use modern global access method.
+
+//Pop up screen user defined parameters
+function abelDensityOnly_Meta(MetaData)
+	struct CScatterPointMetaData& MetaData
+	abelInversion_Meta(MetaData)
+end
+function abelDensityAndBtor_Meta(MetaData)
+	struct CScatterPointMetaData& MetaData
+	abelInversion_Meta(MetaData)
+end
+function abelInversion_Meta(MetaData)
+	struct CScatterPointMetaData& MetaData
+	MetaData.ParameterNameList = "numTimes;t0;t1;numProfilePoints;minR;maxR;fbw;makeAbelTestGraphsFlag"
+
+ 	MetaData.ParameterDescriptionList = "Number of time points;"
+ 	MetaData.ParameterDescriptionList += "Start time [s];"
+ 	MetaData.ParameterDescriptionList += "End time [s];"
+ 	MetaData.ParameterDescriptionList += "Number of profile points;"
+ 	MetaData.ParameterDescriptionList += "Profile min. R [m];"
+ 	MetaData.ParameterDescriptionList += "Profile max. R [m];" 	
+ 	MetaData.ParameterDescriptionList += "Low-pass filter bandwidth [Hz];"
+ 	MetaData.ParameterDescriptionList += "Make test graphs (1==make)"
+
+ 	MetaData.ParameterDefaultList = "100;100e-6;1.5e-3;20;0.08;0.19;20e3;0"
+end
+//Only calculate density profile
+function abelDensityOnly(shotnum)
+	variable shotnum
+	abelMain(shotnum, calcBtorR=0)
+end
+//Calculate density and Btor profile
+function abelDensityAndBtor(shotnum)
+	variable shotnum
+	abelMain(shotnum, calcBtorR=1)
+end
+
+//Returns Abel density at a single radius [m] and time [s] for a given shot
+function abelDensityPoint(r, t, shotnum)
+variable r, t, shotnum
+	variable fbw = 20e3
+	variable numProfilePoints = 30
+	variable minR = 0.08
+	variable maxR = 0.19
+	if (r < minR || r > maxR || numtype(t) != 0)
+		return NaN
+	endif
+	lowpassFilterDensityWaves(fbw)
+	toroidalAbel(t, numProfilePoints, minR, maxR, calcBtorR=0)
+	wave nR
+	return nR(r)
+end function
+
+//Get Abel density profile at Thomson time
+function abelThomsonDensity_Meta(MetaData)
+	struct CScatterPointMetaData& MetaData
+end
+function abelThomsonDensity(shotnum)
+	variable shotnum
+	variable fbw = 20e3
+	variable numProfilePoints = 30
+	variable minR = 0.08
+	variable maxR = 0.19
+	//Load Thomson density profile
+	variable timeThom = loadThomsonDensityData(shotnum)
+	wave RThom, nThom, nUncertThom
+	//Lowpass filter interferometer density waves to frequency fbw
+	lowpassFilterDensityWaves(fbw)
+	//Run Abel inversion on line-averaged density data at Thomson Time
+	toroidalAbel(timeThom, numProfilePoints, minR, maxR, calcBtorR=0)
+	wave nR
+	//Plot
+	variable i, numThom=numpnts(RThom)
+	string shotstr = num2str(shotnum)
+	//Cycle through Thomson radii
+	for (i=0; i<numThom; i+=1)
+		variable RR = RThom[i]
+		string RmmStr = num2str(RR*1000)
+		string graphName = "AbelThomDensityGraph" + RmmStr
+		string abelName = "nAbel"+RmmStr+"_"+shotstr
+		string thomName = "nThom"+RmmStr+"_"+shotstr
+		string thomUncertName = "nUncertThom"+RmmStr+"_"+shotstr
+		//Make plot if it doesn't exist
+		variable setupPlot=0 
+		if (winType(graphName)==0)
+			display/k=1/n=$graphName/w=(0,0,250,200)
+			//Slope of 1 through (0,0)
+			make/o slope1 = {0, 3e14}
+			appendtograph slope1 vs slope1
+			ModifyGraph lstyle(slope1)=1, rgb(slope1)=(0,0,0)
+			//Labels etc
+			Label left "Abel inversion density \u cm^-3"
+			Label bottom "Thomson density \u cm^-3"
+			SetAxis left 0, 2e14
+			SetAxis bottom 0, 2e14
+			ModifyGraph/w=$graphName notation(left)=1, notation(bottom)=1
+			TextBox/w=$graphName/C/N=text0/F=0/B=1/A=RT "slope=1"
+			TextBox/w=$graphName/C/N=text1/F=0/B=1/A=LT "R="+RmmStr+"mm"
+		endif
+		//Density at this Thomson radius
+		make/o/n=1 $abelName, $thomName, $thomUncertName
+		wave nAbelRef=$abelName, nThomRef=$thomName, nUncertThomRef=$thomUncertName
+		nAbelRef = nR(RR)
+		nThomRef = nThom[i]
+		nUncertThomRef = nUncertThom[i]
+		//Plot if this wave hasn't already been plotted
+		if (strlen(traceInfo(graphName, abelName, 0)) == 0)
+			appendtograph/w=$graphName  nAbelRef vs nThomRef
+			ErrorBars/w=$graphName $abelName X, wave=($thomUncertName, $thomUncertName)
+			ModifyGraph/w=$graphName mode($abelName)=3, marker($abelName)=8	
+		endif
+//		//Adjust axes via slope=1 line
+//		getAxis/w=$graphName/Q left
+//		variable maxLeft = V_max
+//		getAxis/w=$graphName/Q bottom
+//		variable maxBottom = V_max
+//		variable maxAx = maxLeft
+//		if (maxBottom>maxAx)
+//			maxAx = maxBottom
+//		endif
+//		wave slopeRef = $slopeName
+//		slopeRef[1] = maxAx
+	endfor
+end
+
+//Get Abel inversion from desired times from PDB
+function abelMain(shotNum, [calcBtorR])
+	variable shotNum, calcBtorR
+	variable i, it
+	variable/g root:EnvironmentVariables:shotnumGlobal = shotnum
+	
+	//Switch to multishot data folder
+	string originalDataFolder = getDataFolder(1)
+	setDataFolder $("root:Spector1:MultiShot:Shot"+num2str(shotnum))
+	
+	//Defaults
+	if (paramIsDefault(calcBtorR))
+		calcBtorR = 0
+	endif
+	
+	//Parameters
+	variable numTimes = str2num(GetParameterValue("numTimes"))
+	variable t0 = str2num(GetParameterValue("t0")) //[s]
+	variable t1 = str2num(GetParameterValue("t1")) //[s]
+	variable numProfilePoints = str2num(GetParameterValue("numProfilePoints")) //[s]
+	variable minR = str2num(GetParameterValue("minR")) //[m]
+	variable maxR = str2num(GetParameterValue("maxR")) //[m]
+	variable fbw = str2num(GetParameterValue("fbw")) //[Hz]
+	variable makeAbelTestGraphsFlag = str2num(GetParameterValue("makeAbelTestGraphsFlag"))
+	//Time wave
+	wave tWave = linspace(t0,t1,numTimes,"tWave")	
+	setScale/I x, t0, t1, "s" tWave
+	
+	//Profile matrices
+	make/o/n=(numProfilePoints, numTimes) nRt=0, BtorRt=0	
+	setScale/i x, minR, maxR, "m", nRt, BtorRt
+	setScale d, 0, 0, "cm^-3", nRt
+	setScale/i y, t0, t1, "s", nRt, BtorRt
+	setScale d, 0, 0, "T", BtorRt
+	if (!calcBtorR)
+		killwaves/z BtorRt
+	endif
+	
+//	//Get Btor 1/R shaft field
+//	//Average all Btor waves at the shaft
+//	string BtorNames = waveList("BIH*009T*_DF4", ";", "")
+//	duplicate/o tWave, Btor009, Btor190
+//	Btor009 = 0
+//	variable numBtorNames = itemsInList(BtorNames)
+//	for (i=0; i<numBtorNames; i+=1)
+//		string BtorName = stringFromList(i,BtorNames)
+//		duplicate/free $BtorName tempW
+//		Btor009 += tempW(x)
+//	endfor
+//	Btor009 /= numBtorNames
+//	Btor190 = Btor009*9/190
+
+	//Lowpass filter density waves to frequency fbw
+	lowpassFilterDensityWaves(fbw)
+
+	//Abel inversion slider graph
+	makeAbelGraph(calcBtorR=calcBtorR)
+	
+	//Cycle through times
+	for (it=0; it<numTimes;it+=1)
+		//Update time
+		variable tt = tWave[it]
+		wave timex
+		timex = {tt,tt}
+		//Calculate Abel inversion
+		toroidalAbel(tt, numProfilePoints, minR, maxR, calcBtorR=calcBtorR)
+		//Populate profile matrices
+		wave nR
+		nRt[][it] = nR[p]
+		if (calcBtorR)
+			wave BtorR
+			BtorRt[][it] = BtorR[p]
+		endif
+		//Display progress
+		if (mod(it, 10)==0)
+			replaceWave/w=abelWin#profile trace=nRt, nRt[][it]
+			if (calcBtorR)
+				replaceWave/w=abelWin#profile trace=BtorRt, BtorRt[][it]	
+			endif
+			doUpdate
+		endif
+	endfor
+
+//	//Calculate chord average from Abel profile as a check
+//	string polDNames = waveList("polD*_filt", ";", "")
+//	polDNames = sortList(polDNames)	
+//	variable numDensityChords = itemsInList(polDNames)
+//	for (i=0; i<numDensityChords; i+=1)	
+//		string polDName = stringFromList(i, polDNames)
+//		string chordStr = polDName[4,6]
+//		string navgName = "nAvgAbel"+chordStr
+//		string errName = "errAbel"+chordStr
+//		//Make waves
+//		make/o/n=(numTimes)/free navgTemp, errTemp
+//		setScale/i x, t0, t1, "s", nAvgTemp, errTemp
+//		setScale d, 0, 0, "cm^-3", nAvgTemp, errTemp
+//		//Populate 
+//		duplicate/free $polDName, polDTemp
+//		for (it=0; it<numTimes; it+=1)
+//			//Abel density profile for this time
+//			duplicate/o/r=[][it] nRt, nR
+//			squeeze(nR)
+//			//Calculate average density implied by Abel inversion
+//			navgTemp[it] = calcAvgDensityFromProfile(nR, str2num(chordStr))
+//			//Error between nAvg from Abel inversion and nAvg measurement
+//			tt = pnt2x(errTemp, it)
+//			errTemp[it] = navgTemp[it] - polDTemp(tt)
+//		endfor
+//		duplicate/o navgTemp, $navgName
+//		duplicate/o errTemp, $errName
+//	endfor
+	
+	//Load Thomson density profile
+	variable/g timeThom = loadThomsonDensityData(shotnum)
+	//Add Thomson density to graphs
+	addThomsonToAbelGraph(calcBtorR=calcBtorR)
+		
+	//Update graphs for first time point
+	updateAbelGraphs(t0)
+	
+	//Make Abel graphs for testing purposes
+	if (makeAbelTestGraphsFlag)
+		makeAbelTestGraphs()
+//		makeDensityProfileAveragesGraph()
+	endif
+	
+	//Clean up
+	killwaves/z chordLengths, ny, phify, yy, RProfile, tWave, nR, BtorR
+	
+	//Data folder
+	setDataFolder $originalDataFolder
+end
+
+//Do abel inversion for time tt
+function toroidalAbel(tt, numProfilePoints, minR, maxR, [calcBtorR])
+	variable tt //[s]
+	variable numProfilePoints, minR, maxR, calcBtorR
+	variable lambda0 = 118.83409e-6 //[m]
+	variable RIn = 0.015 //[m]
+	variable ROut = 0.19 //[m]
+	variable numInterp = 5000
+	variable i
+	
+	//Defaults
+	if (paramIsDefault(calcBtorR))
+		calcBtorR=1
+	endif
+	
+	//Radial profile positions
+	wave RProfile = linspace(minR, maxR, numProfilePoints, "RProfile")  
+	SetScale d 0,0,"m", RProfile
+	//Waves to make
+	make/o/n=(numProfilePoints) nR=0
+	setScale/i x, minR, maxR, "m", nR
+	setScale d, 0, 0, "cm^-3", nR
+	//Interpolation, etc. required before abel inversion
+	abelDensityPreInversion(tt, numInterp)
+	wave yi, nLyi
+
+	//Abel inversion for density
+	wave nR = abelInversion(nLyi, yi, RProfile, "nR") //[m^-3]
+
+	//==Faraday rotation Abel inversion (see erickson1986thesis, p51)
+	if (calcBtorR)
+		//Polarimeter wave names
+		string polFNames = waveList("polF*", ";", "")
+		variable numFRChords = itemsInList(polFNames)
+		//Sort alphabetically... so go from chord 090 to 160
+		polFNames = sortList(polFNames)
+		//Make Btor profile wave
+		make/o/n=(numProfilePoints) BtorR=0
+		setScale/i x, minR, maxR, "m", BtorR
+		setScale d, 0, 0, "T", BtorR
+		//Initialize waves for Abel inversion
+		//Add a measurement of zero FR at the outer wall to constrain Abel inversion
+		make/o/n=(numFRChords+1) yy, phify, chordLengths = 0
+		yy[numFRChords] = ROut
+		phify[numFRCHords] = 0
+		for (i=0; i<numFRChords; i+=1)
+			string polFName = stringFromList(i, polFNames)
+			variable chordNum = str2num( polFName[4,6] )
+			wave polF = $polFName
+			yy[i] = 1/1000 * chordNum // [m]
+ 			phify[i] = pi/180 * polF(tt) //[rad]
+ 			//Chord length
+			chordLengths[i] = str2num( StringByKey("length_m", note(polF), "=", "\r\n") )
+		endfor
+		//Abel inversion of Far rot measurements gives you the integrand of Far rot integral as function of R
+		//Far rot integrand = 2.63e-13 * lambda0**2 * n(R) * Bpara(R)
+		phify[] = phify[p] / yy[p]
+		wave BtorR = abelInversion(phify, yy, RProfile, "BtorR")
+		BtorR[] = - RProfile[p] * BtorR[p] / (2.63e-13 * lambda0^2 * nR[p])
+	endif
+	
+	//Make nR cm^-3
+	nR *= 1e-6 //[cm^-3]
+end
+
+//Interpolate and do other stuff required before attempting Abel inversion
+function abelDensityPreInversion(tt, numInterp)
+	variable tt, numInterp
+
+	//Density wave names
+	string suffix = "_filt"
+	string polDNames = waveList("polD*"+suffix, ";", "")
+	//Sort alphabetically... so go from chord 090 to 160
+	polDNames = sortList(polDNames)	
+	//Remove angled (069) chord if it's in the list because it's not an equitorial chord
+	polDNames = removeFromList("polD069"+suffix, polDNames)
+	//Number of equitorial interferometer chords
+	variable numDensityChords = itemsInList(polDNames)
+
+	//==Density Abel inversion
+	//Initialize density waves for Abel inversion
+	//Add a measurement of zero density at the outer wall to constrain Abel inversion
+	//Add a measurement a the inner radius to help constrain inverison
+	make/o/n=(numDensityChords) yy, ny=0, nLy
+	variable i
+	for (i=0; i<numDensityChords; i+=1)
+		//Density chord measurements
+		string polDName = stringFromList(i, polDNames)
+		variable chordNum = str2num( polDName[4,6] )
+		wave polD = $polDName
+		yy[i] = 1/1000 * chordNum // [m]
+		ny[i] = 1e6*polD(tt) //[m^-3]
+	endfor	
+	
+	//Zero at outer wall
+	if (numDensityChords==3)
+		numDensityChords+=1
+		redimension/n=(numDensityChords) yy, ny, nLy
+		ny[numDensityChords-1] = 0
+		yy[numDensityChords-1] = 0.19 //[m] ROut
+	endif
+	
+//	//Pre-wall chord
+//	numDensityChords+=1
+//	redimension/n=(numDensityChords) yy, ny, nLy
+//	ny[numDensityChords-1] = ny[numDensityChords-2]*3
+//	yy[numDensityChords-1] = 0.185 //[m] ROut
+
+//	//Add inner point to ny and then re-interpolate
+//	insertPoints 0, 1, yy, ny, nLy
+//	yy[0] = 0.07
+//	ny[0] = 0.5*ny[1]
+
+//	//Add middle point to ny and then re-interpolate
+//	insertPoints 1, 1, yy, ny, nLy
+//	yy[1] = 0.105
+//	ny[1] = 1.5*ny[2]
+
+	//Need to multiply by chordLengths to make density work
+	nLy[] = ny[p] * getChordL(yy[p]*1000)
+
+	//Interpolate (cubic spline) average density along R
+	wave yi = linspace(0.015, 0.19, numInterp, "yi")
+	//Interpolate (cubic spline)
+	interpolate2/e=2 /x=yi /y=nyi /t=2 /i=3 yy, ny
+	setScale/i x yi[0], yi[numInterp-1], "m", nyi
+
+//	//Add inner point to ny and then re-interpolate
+//	variable nyiAvg120To190 = 0.5*mean(nyi,0.12,0.19)
+//	numDensityChords += 1
+//	insertPoints 0, 1, yy, ny
+//	yy[0] = 0.07
+//	ny[0] = nyiAvg120To190
+//	duplicate/o ny, nLy
+//	nLy = ny[p] * getChordL(yy[p]*1000)
+//	//Interpolate again with the new inner point (cubic spline)
+//	interpolate2/e=2 /x=yi /y=nyi /t=2 /i=3 yy, ny
+	
+	//Density quantity to invert
+	duplicate/o yi, nLyi
+	nLyi = nyi[p] * getChordL(yi[p]*1000) //multiply avg density by chord lengths	
+	
+	//Scaling
+	setScale/i x yi[0], yi[numInterp-1], "m", nyi, nLyi
+end
+
+//Abel inversion to get f(RProfile) given F(y) line-integrated measurements.
+//Assumes axisymmetry
+//Inputs:
+//	F(yF)		Line integrated measurements multiplied by the chord length at locations yF. 
+//	yF 			Either the toroidal radius or the poloidal radius depending on the orientation of the chords.
+//	RProfile		Either the toroidal radius or poloidal radius profile points.
+//	name		Wave name to use for the output profile fProfile(RProfile)
+function/wave abelInversion(Fi, yi, RProfile, name)
+	wave Fi, yi, RProfile
+	string name
+	variable i, j
+	variable numProfile = numpnts(RProfile)
+	variable numMeas = numpnts(Fi)
+	variable numInterp = numpnts(yi)
+	//Not enough measurements
+	if (anyNumberIsNan(Fi))
+		print "abelInversion error: NaN in measurements."
+		abort
+	endif
+	
+	//Interpolation points
+	variable dyi = yi[1]-yi[0]
+	//Squared yi
+	duplicate/o yi yiSq
+	yiSq = yi^2
+		
+	//Gradient of F
+	differentiate Fi /d=dFdy /x=yi
+
+	//Calculate profile    
+	make/o/n=(numProfile) $name = 0
+	wave fProfile = $name
+	make/o/n=(numInterp) integrandWave = 0
+	variable idR=0
+	//Cycle through profile points
+	//Don't calculate last profile point or else get singularity
+	for (i=0; i<numProfile-1; i+=1)
+		//Integrate from current R to outer wall R
+		//Current R
+		variable RR = RProfile[i]
+		//Get index of first yi with value greater than R
+		idR = ceil((RR-yi[0])/dyi)
+		//Get integrands
+		integrandWave[] = 0
+		integrandWave[idR,numInterp-1] = -1/pi * dFdy[p] / sqrt(yiSq[p]-RR^2)     
+		//Integrate
+		fProfile[i] = areaXY(yi, integrandWave)
+	endfor
+	//Scaling
+	setScale/i x, RProfile[0], RProfile(numProfile-1), "m", fProfile
+	
+	//Return profile and clean up
+	killwaves/z yiSq, Fi, dFdy, dF, dy, integrandWave
+	return fProfile
+end
+
+//Make Abel inversion slider graph
+function makeAbelGraph([calcBtorR])
+	variable calcBtorR
+	wave nRt, BtorRt, nR, BtorR
+	variable i
+	
+	//Defaults
+	if (paramIsDefault(calcBtorR))
+		calcBtorR=1
+	endif
+	
+	//Folder path containing Abel profile data
+	string/g root:AbelDataPath = getDataFolder(1)
+	
+	//Make abelWin graph window
+	doWindow/k abelWin
+	display/k=1/n=abelWin/w=(0,0,400,400)
+	
+	//==Controls
+	variable t0_us = dimoffset(nRt,1)*1e6
+	variable t1_us = 1e6*(dimOffset(nRt,1)+(dimsize(nRt,1)-1)*dimdelta(nRt,1))
+	variable dt_us = 1e6*dimdelta(nRt,1)
+	//Slider
+	ControlBar/w=abelWin 30
+	Slider AbelTimeSlider, ticks=0, pos={20,12}, size={300,50}, proc=abel_SliderProc, vert=0, side=0
+	Slider AbelTimeSlider, limits={t0_us, t1_us, dt_us}
+	//Arrows
+	SetVariable AbelTimeSetControl, title="us", pos={350,7}, size={80, 10}, proc=abel_SetTimeProc
+	setVariable AbelTimeSetControl, limits={t0_us, t1_us, dt_us}, value=_NUM:t0_us
+	//Button
+	Button AbelThomsonButton, pos={450,5}, size={50,20}, title="Thomson", proc=abel_ButtonProc
+	
+	//==Profile
+	display/k=1/host=abelWin/n=profile/w=(0,0,400,200)
+	appendtograph/w=abelWin#profile nRt[][0]
+	//Labels etc
+	SetAxis/w=abelWin#profile left 0, 2.5e14
+	SetAxis/w=abelWin#profile bottom 0.08, 0.19
+	ModifyGraph/w=abelWin#profile notation(left)=1
+	Label/w=abelWin#profile left "Density (\u)"
+	Label/w=abelWin#profile bottom "Major Radius (\u)"
+	Legend/f=0/b=1/w=abelWin#profile/C/N=legend2000/J "Profiles\r\\s(nRt) Density"
+	if (calcBtorR)
+		appendtograph/r/w=abelWin#profile BtorRt[][0]
+		ModifyGraph/w=abelWin#profile rgb(BtorRt)=(0,0,65280)
+		Label/w=abelWin#profile right "Btor (\u)"
+		Legend/f=0/b=1/w=abelWin#profile/C/N=legend2000/J "Profiles\r\\s(nRt) Density\r\\s(BtorRt) Btor"
+		SetAxis/w=abelWin#profile right 0,1.5
+	endif
+
+	//==Chords
+	display/k=1/host=abelWin/n=chords/w=(0,200,400,400)
+	string legendStr =  "Spector1 \\{root:EnvironmentVariables:shotnumGlobal}\rChord (mm)\r"
+	//Density
+	string polDNames = waveList("polD*_filt", ";", "")
+	//Sort alphabetically... so go from chord 090 to 160
+	polDNames = sortList(polDNames)	
+	variable numDensityChords = itemsInList(polDNames)
+	for (i=0; i<numDensityChords; i+=1)
+		string polDName = stringFromList(i, polDNames)
+		string chordStr = polDName[4,6]
+		appendtograph/w=abelWin#chords $polDName
+		if (i==0)
+			ModifyGraph/w=abelWin#chords rgb($polDName)=(65280,0,0)
+		elseif (i==1)
+			ModifyGraph/w=abelWin#chords rgb($polDName)=(0,0,65280)
+		elseif(i==2)
+			ModifyGraph/w=abelWin#chords rgb($polDName)=(0,65280,0)
+		elseif(i==3)
+			ModifyGraph/w=abelWin#chords rgb($polDName)=(0,65280,65280)
+		endif
+		legendStr += "\\s("+polDName+") "+chordStr+"\r"
+	endfor
+	//Time line
+	make/o timey={-inf,inf}, timex={0,0}
+	appendtograph timey vs timex
+	ModifyGraph lstyle(timey)=2,rgb(timey)=(0,0,0)
+	//Labels etc
+	Label/w=abelWin#chords left "Average density (\u)"
+	Label/w=abelWin#chords bottom "\U"
+	SetAxis/w=abelWin#chords bottom -100e-6, 2e-3
+	SetAxis/w=abelWin#chords left 0, *
+	ModifyGraph/w=abelWin#chords zero(left)=2, notation(left)=1
+	//FR
+	if (calcBtorR)
+		string polFNames = waveList("polF*", ";", "")
+		//Sort alphabetically... so go from chord 090 to 160
+		polFNames = sortList(polFNames)	
+		variable numFRChords = itemsInList(polFNames)
+		for (i=0; i<numFRChords; i+=1)
+			string polFName = stringFromList(i, polFNames)
+			appendtograph/r/w=abelWin#chords $polFName
+			if (i==0)
+				ModifyGraph/w=abelWin#chords rgb($polFName)=(65280,0,0)
+			elseif (i==1)
+				ModifyGraph/w=abelWin#chords rgb($polFName)=(0,0,65280)
+			elseif(i==2)
+				ModifyGraph/w=abelWin#chords rgb($polFName)=(0,65280,0)
+			elseif(i==3)
+				ModifyGraph/w=abelWin#chords rgb($polFName)=(0,65280,65280)
+			endif
+		endfor
+		//Labels for FR
+		Label/w=abelWin#chords right "Faraday rotation (\u)"
+		SetAxis/w=abelWin#chords right -10, 10
+		SetAxis/w=abelWin#chords left -2.5e14, 2.5e14
+	endif
+	//Legend
+	Legend/x=-5/f=0/b=1/w=abelWin#chords/C/N=legend2000/J legendStr
+	
+	doUpdate
+end
+
+//Abel inversion graph time slider function
+Function abel_SliderProc(ctrlName,time_us,event) : SliderControl
+	String ctrlName
+	Variable time_us
+	Variable event	// bit field: bit 0: value set, 1: mouse down, 2: mouse up, 3: mouse moved
+	if(event %& 0x1)	// bit 0, value set
+		//Update graphs at new time
+		updateAbelGraphs(time_us*1e-6)
+	endif
+	return 0
+End
+
+//Abel inversion set variable control
+Function abel_SetTimeProc(ctrlName, time_us, varStr, varName) : SetVariableControl
+	String ctrlName
+	Variable time_us
+	string varStr
+	string varName
+	//Update graphs at new time
+	updateAbelGraphs(time_us*1e-6)
+End
+
+//Abel inversion set variable control
+Function abel_ButtonProc(ctrlName) : ButtonControl
+	String ctrlName
+	//Update graphs at new time
+	updateAbelGraphs(nan)
+End
+
+//Update Abel inversion graphs
+function updateAbelGraphs(tt)
+	variable tt
+	//Move to multishot data folder
+	string originalFolder = getDataFolder(1)
+	svar dataPath = root:AbelDataPath
+	cd $dataPath
+	
+	//Thomson time
+	nvar timeThom
+	//If given time is NaN, go to Thomson time
+	if (numberIsNan(tt))
+		tt = timeThom
+	endif
+
+	//Update setVariable control
+	setVariable AbelTimeSetControl, value=_NUM:(tt*1e6), win=abelWin
+	//Update slider control
+	slider AbelTimeSlider, value=(tt*1e6), win=abelWin
+
+	//Time index
+	wave nRt, BtorRt
+	variable it = matrixX2pnt(tt, 1, nRt)
+	variable N = dimsize(nRt,1)
+	wave timex
+	timex = {tt, tt}
+	//Update Abel profile
+	replaceWave/w=abelWin#profile trace=nRt, nRt[][it]
+	if (waveExists(BtorRt))
+		replaceWave/w=abelWin#profile trace=BtorRt, BtorRt[][it]
+	endif
+	//Hide Thomson
+	if (abs(tt-timeThom)>10e-6)
+		ModifyGraph/w=abelWin#profile rgb(nThom)=(65535,65535,65535)
+	//Show Thomson
+	else
+		ModifyGraph/w=abelWin#profile rgb(nThom)=(0,0,0)
+	endif
+	//Calculates spline fits 
+	variable numInterp = 100
+	abelDensityPreInversion(tt, numInterp)
+	//Return to original folder
+	cd $originalFolder		
+end	
+
+//Add thomson density profile to abel graph
+function addThomsonToAbelGraph([calcBtorR])
+	variable calcBtorR 
+	variable RIn = 0.015
+	variable ROut = 0.19 //[m]
+	variable i
+	if (paramIsDefault(calcBtorR))
+		calcBtorR = 0
+	endif
+	//Thomson time
+	nvar timeThom
+	string timeThomStr = num2str( 1e6*timeThom )
+	//Plot Thomson density profile
+	wave RThom, nThom, nUncertThom, garbageThom
+	appendtograph/w=abelWin#profile nThom vs RThom
+	ErrorBars/w=abelWin#profile nThom Y, wave=(nUncertThom, nUncertThom)	
+	ModifyGraph/w=abelWin#profile mode(nThom)=3,marker(nThom)=8, rgb(nThom)=(0,0,0)
+	//Make temp Thomson waves for interpolation
+	variable numThom = numpnts(RThom)
+	//Add thomson point of n=0 at wall
+	make/o/n=(numThom+1) TSDenTemp, TSRTemp
+	numThom += 1
+	TSDenTemp = nThom[p]
+	TSRTemp = RThom[p]
+	TSRTemp[numThom-1] = ROut
+	TSDenTemp[numThom-1] = 0
+	//Add thomson point of n=0 at shaft
+	insertPoints 0, 1, TSRTemp, TSDenTemp
+	numThom+=1
+	TSRTemp[0] = RIn
+	TSDenTemp[0] = 0
+//	//Interpolate Thomson
+//	wave yi
+//	interpolate2/e=2 /x=yi /y=TSDenInterp /t=2 /i=3 TSRTemp, TSDenTemp
+//	setScale/i x yi[0], yi[numpnts(yi)-1], "m", TSDenInterp
+//	appendtograph/w=abelWin#profile TSDenInterp
+//	ModifyGraph/w=abelWin#profile lstyle(TSDenInterp)=1,rgb(TSDenInterp)=(0,0,0)
+	
+//	//Calculate average density implied by Thomson profile
+//	//Sort chords alphabetically... so go from chord 090 to 160
+//	string polDNames = waveList("polD*_filt", ";", "")
+//	polDNames = sortList(polDNames)	
+//	variable numDensityChords = itemsInList(polDNames)
+//	for (i=0; i<numDensityChords; i+=1)
+//		string polDName = stringFromList(i, polDNames)
+//		string chordStr = polDName[4,6]
+//		//Calculate avg densities from Thomson
+//		string nAvgName = "nAvgThom"+chordStr
+//		make/o/n=1/free navgTemp
+//		setScale/p x timeThom, 1, "s", navgTemp
+//		setScale d, 0, 0, "cm^-3", navgTemp
+//		navgTemp = calcAvgDensityFromProfile(TSDenInterp, str2num(chordStr))
+//		duplicate/o navgTemp, $nAvgName
+//		//Calculate error between thomson avg density and FIR measured avg density
+//		string errName = "errThom"+chordStr
+//		make/o/n=1/free errTemp
+//		setScale/p x timeThom, 1, "s", errTemp
+//		setScale d, 0, 0, "cm^-3", errTemp
+//		duplicate/free $polDName, polDTemp
+//		errTemp = (navgTemp - polDTemp(x))
+//		duplicate/o errTemp, $errName
+//	endfor	
+	
+	//Legend
+	Legend/w=abelWin#profile/C/N=legend2000/J "Profiles\r\\s(nRt) Abel density\r\\s(nThom) Thomson density ("+timeThomStr+"us)"
+	if (calcBtorR)
+		Legend/w=abelWin#profile/C/N=legend2000/J  "Profiles\r\\s(nRt) Density\r\\s(BtorRt) Btor\r\\s(nThom) Thomson density ("+timeThomStr+"us)"
+	endif
+end
+
+//Calculate line averaged interferometer density chord values 
+//given density profile, nR. nR wave must be scaled so x is the radius
+function calcAvgDensityFromProfile(nR, yChord)
+	wave nR
+	variable yChord //[mm]
+	yChord /= 1000
+	variable N = 100
+	variable ROut = 0.19
+	variable xMax = sqrt(ROut^2-yChord^2)	
+	wave xChord = linspace(-xMax, xMax, N, "xChord")
+	make/o/n=(N) RChord = sqrt(xChord[p]^2 + yChord^2)
+	make/o/n=(N) nChord = nR(RChord[p])
+	return mean(nChord)
+end
+
+//Make Abel inversion averages graphs to check that Abel did OK job
+function makeDensityProfileAveragesGraph()
+	variable i
+	variable width=200, height=150
+	//Make abelWin graph window
+	doWindow/k denAvgWin
+	display/k=1/n=denAvgWin/w=(400, 0, 400+width*2, height*2)
+
+	string legendStr =  "Spector1 \\{root:EnvironmentVariables:shotnumGlobal}\r "
+	//Density
+	string polDNames = waveList("polD*_filt", ";", "")
+	//Sort alphabetically... so go from chord 090 to 160
+	polDNames = sortList(polDNames)	
+	variable numDensityChords = itemsInList(polDNames)
+	variable row=0, col=0
+	for (i=0; i<numDensityChords; i+=1)
+		string polDName = stringFromList(i, polDNames)
+		string plotName = polDName+"Plot"
+		string chordStr = polDName[4,6]
+		//Make plot
+		display/k=1/host=denAvgWin/n=$(plotName)/w=(width*col, height*row, (col+1)*width, (row+1)*height)
+		//Measured FIR density
+		appendtograph $polDName
+		//Abel avg
+		string avgAbelName = "nAvgAbel"+chordStr
+		appendtograph $avgAbelName
+		ModifyGraph rgb($avgAbelName)=(0,0,65280)
+		//Thomson avg
+		string avgThomName = "nAvgThom"+chordStr
+		appendtograph $avgThomName
+		ModifyGraph rgb($avgThomName)=(0,0,0), mode($avgThomName)=3,marker($avgThomName)=8
+		//Time line
+		make/o timey={-inf,inf}, timex={0,0}
+		appendtograph timey vs timex
+		ModifyGraph lstyle(timey)=2,rgb(timey)=(0,0,0)
+		//Labels etc
+		Label left "\u"
+		Label bottom "\U"
+		SetAxis bottom -100e-6, 2e-3
+		SetAxis left 0, *
+		ModifyGraph zero(left)=2, notation(left)=1
+		if (i==0)
+			Legend/x=45/y=-5/B=1/F=0/C/N=legend2000/J legendStr+"\\s(polD"+chordStr+"_filt) FIR meas\r\\s(nAvgAbel"+chordStr+") nAvg Abel\r\\s(nAvgThom"+chordStr+") nAvg Thom."
+		endif
+		TextBox/C/N=text0/F=0/b=1/A=RT chordStr
+		//Increment row, col
+		col+=1
+		if (col>1)
+			col=0
+			row+=1
+		endif		
+	endfor
+	
+	doUpdate
+end
+
+//Make test graphs for diagnosing Abel inversion
+function makeAbelTestGraphs()
+	//Abel interpolation curves
+	doWindow/k abelInterpGraph
+	display/k=1/n=abelInterpGraph/w=(0, 470, 400, 670)
+	//nL
+	appendtograph nLy vs yy
+	appendtograph nLyi
+	ModifyGraph rgb(nLyi)=(65280,0,0), rgb(nLy)=(65280,0,0), mode(nLy)=3, marker(nLy)=8, notation(left)=1
+	SetAxis left 0,*
+	//nAvg
+	appendtograph/r ny vs yy
+	appendtograph/r nyi
+	ModifyGraph rgb(nLyi)=(0,0,65280), rgb(nLy)=(0,0,65280), mode(ny)=3, marker(ny)=5, notation(right)=1
+	SetAxis right 0,*
+	//Labels, etc.
+	SetAxis bottom 0.015,0.19
+	Label left "nL \\u m^-2"
+	Label right "nAvg \\u m^-3"
+	Label bottom "R [m]"
+	Legend/b=1/f=0/C/N=legend2000/J "\\s(nLy) nLy\r\\s(ny) ny"
+	
+	//Error curves
+	doWindow/k abelErrorGraph
+	display/k=1/n=abelErrorGraph/w=(400,470, 800, 670)
+	//Density
+	string polDNames = waveList("polD*_filt", ";", "")
+	//Sort alphabetically... so go from chord 090 to 160
+	polDNames = sortList(polDNames)	
+	variable numDensityChords = itemsInList(polDNames)
+	variable i
+	string legendStr="", legendStrThom=""
+	for (i=0; i<numDensityChords; i+=1)
+		string polDName = stringFromList(i, polDNames)
+		string chordStr = polDName[4,6]	
+		//Plot
+		appendtograph $("errAbel"+chordStr)
+		appendtograph $("errThom"+chordStr)	
+		modifyGraph mode($("errThom"+chordStr))=3, marker($("errThom"+chordStr))=8	
+		//Colours
+		if (i==0)
+			ModifyGraph rgb($("errAbel"+chordStr))=(65280,0,0), rgb($("errThom"+chordStr))=(65280,0,0)
+		elseif (i==1)
+			ModifyGraph rgb($("errAbel"+chordStr))=(0,0,65280), rgb($("errThom"+chordStr))=(0,0,65280)
+		elseif(i==2)
+			ModifyGraph rgb($("errAbel"+chordStr))=(0,65280,0), rgb($("errThom"+chordStr))=(0,65280,0)
+		elseif(i==3)
+			ModifyGraph rgb($("errAbel"+chordStr))=(0,65280,65280), rgb($("errThom"+chordStr))=(0,65280,65280)
+		endif	
+		//Legend text	
+		legendStr += "\\s(errAbel"+chordStr+") Abel "+chordStr+"\r"
+		if (i==0)		
+			legendStrThom = "\\s(errThom"+chordStr+") Thomson "+chordStr+"\r"
+		endif
+	endfor	
+	legendStr += legendStrThom
+	//Labels, etc.
+	ModifyGraph zero(left)=2, notation(left)=1
+	Label left "Error \\u"
+	Legend/x=70/y=40/b=1/f=0/C/N=legend2000/J legendStr
+end

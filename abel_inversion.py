@@ -40,4 +40,3 @@ f_r = r + 9
 a = 2
 y = 3
 print(A_I.abel_inversion(a, y, f_r))
-# A_I.test_integrals()
