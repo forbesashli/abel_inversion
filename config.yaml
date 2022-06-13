@@ -1,0 +1,15 @@
+DEFAULT_SETUP:
+  num_time_points: 100
+  start_time: 100e-6
+  stop_time: 5e-3
+  num_profile_points: 20
+  profile_min: 0.08
+  profile_max: 0.19
+  low_pass_bandwith: 20e3
+  graphs: 1
+
+INTEGRAL_VARIABLES:
+  A_VAL: 3
+  Y_VAL: 2
+  X_VAL: 1.414
+  F_R: r + 4

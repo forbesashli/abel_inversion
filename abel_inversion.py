@@ -1,21 +1,33 @@
-from cgitb import reset
-from unittest import result
 import numpy as np
 import scipy as sp
 import sympy as smp
 import scipy.integrate as integrate
 import scipy.special as special
+import yaml
 
 # test test
 
 
+def readInConfigFile(ymlFile):
+    with open(ymlFile, "r") as stream:
+        try:
+            configDict = yaml.safe_load(stream)
+            return configDict
+        except yaml.YAMLError as exc:
+            print(exc)
+            return None
+
+
+CONFIG_DICT = readInConfigFile("config.yaml")
+
+
 class cv:  # cord_variables
-    A_VALUE = 2
-    X_VALUE = 1.414
-    Y_VALUE = 1.414
+    A_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["A_VAL"]
+    X_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["X_VAL"]
+    Y_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["Y_VAL"]
 
 
-class A_I:
+class A_T:  # abel transform
     def integrand(y, f_r):
         r = smp.symbols("r", real=True)
 
@@ -23,8 +35,10 @@ class A_I:
             2 * r * f_r / (smp.sqrt(r ** smp.Rational(2, 1) - y ** smp.Rational(2, 1)))
         )
 
-    def abel_inversion(a, y, f_r):
-        return smp.integrate(A_I.integrand(y, f_r), (r, y, a)).evalf()
+    def abel_transform(a, y, f_r):
+        r = smp.symbols("r", real=True)
+
+        return smp.integrate(A_T.integrand(y, f_r), (r, y, a)).evalf()
 
     def test_integrals():
 
@@ -35,8 +49,18 @@ class A_I:
         print(result)
 
 
+class A_I:
+    def integrand(r, F_y):
+        y = smp.symbols("y", real=True)
+        F_dy = 2
+        return -1 / (np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))
+
+    def abel_inverse_given_F_y(a, r, F_y):
+        y = smp.symbols("y", real=True)
+        return smp.integrate(A_I.integrand(r, F_y), (y, r, a)).evalf()
+
+
 r = smp.symbols("r", real=True)
 f_r = r + 9
-a = 2
-y = 3
-print(A_I.abel_inversion(a, y, f_r))
+
+print(A_I.abel_inverse_given_F_y(cv.A_VALUE, cv.Y_VALUE, f_r))
