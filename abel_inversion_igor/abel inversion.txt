@@ -26,7 +26,7 @@ function abelInversion_Meta(MetaData)
 end
 //Only calculate density profile
 function abelDensityOnly(shotnum)
-	variable shotnum
+	variable shotnum 
 	abelMain(shotnum, calcBtorR=0)
 end
 //Calculate density and Btor profile

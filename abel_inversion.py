@@ -1,6 +1,7 @@
 import numpy as np
 import scipy as sp
 import sympy as smp
+from sympy import I
 import scipy.integrate as integrate
 import scipy.special as special
 import yaml
@@ -52,7 +53,7 @@ class A_T:  # abel transform
 
 class A_I:
     def integrand(r, F_dy):
-        return -1 / (np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))
+        return (-1 / np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))
 
     def derivative(F_y):
         return smp.diff(F_y)
@@ -61,9 +62,12 @@ class A_I:
         y = smp.symbols("y", real=True)
         F_dy = A_I.derivative(F_y)
         test = A_I.integrand(r, F_dy)
+        print(test)
+        print(smp.integrate(test, (y, r, a)))
         return smp.integrate(test, (y, r, a)).evalf()
 
 
 y = smp.symbols("y", real=True)
 F_y = y**3 + y
-print(A_I.abel_inverse_given_F_y(cv.R_VALUE, cv.A_VALUE, F_y))
+test_1 = A_I.abel_inverse_given_F_y(cv.R_VALUE, cv.A_VALUE, F_y).as_two_terms()
+print(test_1)
