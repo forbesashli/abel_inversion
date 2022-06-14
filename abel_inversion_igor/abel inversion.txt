@@ -609,6 +609,7 @@ function updateAbelGraphs(tt)
 	cd $dataPath
 	
 	//Thomson time
+
 	nvar timeThom
 	//If given time is NaN, go to Thomson time
 	if (numberIsNan(tt))

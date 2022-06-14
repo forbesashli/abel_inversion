@@ -23,6 +23,7 @@ CONFIG_DICT = readInConfigFile("config.yaml")
 
 class cv:  # cord_variables
     A_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["A_VAL"]
+    R_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["R_VAL"]
     X_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["X_VAL"]
     Y_VALUE = CONFIG_DICT["INTEGRAL_VARIABLES"]["Y_VAL"]
 
@@ -50,17 +51,19 @@ class A_T:  # abel transform
 
 
 class A_I:
-    def integrand(r, F_y):
-        y = smp.symbols("y", real=True)
-        F_dy = 2
+    def integrand(r, F_dy):
         return -1 / (np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))
 
-    def abel_inverse_given_F_y(a, r, F_y):
+    def derivative(F_y):
+        return smp.diff(F_y)
+
+    def abel_inverse_given_F_y(r, a, F_y):
         y = smp.symbols("y", real=True)
-        return smp.integrate(A_I.integrand(r, F_y), (y, r, a)).evalf()
+        F_dy = A_I.derivative(F_y)
+        test = A_I.integrand(r, F_dy)
+        return smp.integrate(test, (y, r, a)).evalf()
 
 
-r = smp.symbols("r", real=True)
-f_r = r + 9
-
-print(A_I.abel_inverse_given_F_y(cv.A_VALUE, cv.Y_VALUE, f_r))
+y = smp.symbols("y", real=True)
+F_y = y**3 + y
+print(A_I.abel_inverse_given_F_y(cv.R_VALUE, cv.A_VALUE, F_y))
