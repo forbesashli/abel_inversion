@@ -53,21 +53,35 @@ class A_T:  # abel transform
 
 class A_I:
     def integrand(r, F_dy):
-        return (-1 / np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))
+        # return lambda y: np.exp((y))
+        return lambda y: (-1 / np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))
+        return (-1 / np.pi) * F_dy / ((y**2 - r**2) ** (1 / 2))  # this is accurate
 
     def derivative(F_y):
-        return smp.diff(F_y)
+        return smp.diff(F_y)  # this is accurate
 
     def abel_inverse_given_F_y(r, a, F_y):
-        y = smp.symbols("y", real=True)
+
         F_dy = A_I.derivative(F_y)
         test = A_I.integrand(r, F_dy)
-        print(test)
-        print(smp.integrate(test, (y, r, a)))
-        return smp.integrate(test, (y, r, a)).evalf()
+        test = lambda y: (-1 / np.pi) * (F_dy) / ((y**2 - r**2) ** (1 / 2))
+
+        # print(smp.integrate(test, (y, r, a)))
+        # print(integrate.quad(test, r, a))
 
 
 y = smp.symbols("y", real=True)
 F_y = y**3 + y
-test_1 = A_I.abel_inverse_given_F_y(cv.R_VALUE, cv.A_VALUE, F_y).as_two_terms()
-print(test_1)
+F_dy = A_I.derivative(F_y)
+# A_I.abel_inverse_given_F_y(cv.R_VALUE, cv.A_VALUE, F_y)
+print(
+    smp.integrate(
+        (-1 / np.pi) * (3 * y**2 + 1) / (y**2 - cv.R_VALUE**2) ** (1 / 2),
+        (y, cv.A_VALUE, cv.R_VALUE),
+    ).evalf()
+)
+# f_1 = lambda y: (-1 / np.pi) * (F_dy) / ((y**2 - cv.R_VALUE**2) ** (1 / 2))
+f_2 = (
+    lambda y: (-1 / np.pi) * (3 * y**2 + 1) / ((y**2 - cv.R_VALUE**2) ** (1 / 2))
+)
+print(integrate.quad(f_2, cv.R_VALUE, cv.A_VALUE))
